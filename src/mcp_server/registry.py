@@ -87,6 +87,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "desc": "Run semantic search across video/image content.",
         "req_model": SearchRequest_frontui_In,
         "schema_defaults": {"search_sources": ["image"]},
+        "schema_overrides": {
+            "search_sources": {"items": {"type": "string", "enum": ["image"]}},
+        },
         "resp_model": SearchResponse_frontui,
         "trim": trim_search,
         "params": None,
@@ -443,6 +446,11 @@ def tool_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
             if key in props:
                 prop = dict(props[key])
                 prop["default"] = value
+                props[key] = prop
+        for key, value in (spec.get("schema_overrides") or {}).items():
+            if key in props:
+                prop = dict(props[key])
+                prop.update(value)
                 props[key] = prop
         props.pop("user_id", None)
         props.pop("userid", None)

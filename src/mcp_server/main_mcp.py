@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal
 import os
 import sys
 import base64
@@ -41,6 +41,9 @@ def _json_type_to_py(py_prop: Dict[str, Any]) -> Any:
     if ptype == "boolean":
         return bool
     if ptype == "array":
+        values = (py_prop.get("items") or {}).get("enum")
+        if values:
+            return list[Literal[tuple(values)]]
         return list[Any]
     if ptype == "object":
         return dict

@@ -10,12 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "vmodal>=1.0.0,<2.0.0",
-  "mcp>=1.2.0",
+  "mcp>=1.2.0,<2.0.0",
   "fire>=0.6.0",
 ]
 
 [project.scripts]
 vmodal-mcp = "src.mcp_server.main_mcp:cli"
+vmodal = "src.mcp_server.cli:main"
 
 [tool.setuptools]
 packages = [
@@ -28,3 +29,6 @@ packages = [
 src = "src"
 "src.utils" = "src/utils"
 "src.mcp_server" = "src/mcp_server"
+
+[tool.setuptools.package-data]
+"src.mcp_server" = ["assets/*.mp4"]

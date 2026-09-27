@@ -1,69 +1,43 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/v-modal/vmodal_mcp/main/readme_assets/logo_vmodal_owl_v.jpeg" alt="VModal owl" width="88">
   <h1>VModal MCP</h1>
-  <p><strong>Give your AI assistant eyes for every video and image you own.</strong></p>
-  <p>Search moments in natural language. Upload media. Build indexes.<br>Stay inside Claude Code, Codex, Cursor, or GitHub Copilot.</p>
-  <a href="#start-in-minutes"><strong>Get started</strong></a>
-  &nbsp;&middot;&nbsp;
-  <a href="#things-you-can-ask"><strong>See what it can do</strong></a>
-  &nbsp;&middot;&nbsp;
-  <a href="#toolbox-for-pro-users"><strong>Pro toolbox</strong></a>
-  <br><br>
-  <img src="https://img.shields.io/badge/MCP-local%20stdio-6C63FF" alt="MCP local stdio server">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/VModal%20SDK-1.x-0B7285" alt="VModal SDK 1.x">
-  <img src="https://img.shields.io/badge/package-0.2.0-FF8A3D" alt="Package 0.2.0">
+  <p><strong>Search, upload, and organize videos with your AI assistant.</strong></p>
+  <p>Works with Claude Code, Codex, Cursor, and GitHub Copilot.</p>
 </div>
 
 <br>
 
 <img src="https://raw.githubusercontent.com/v-modal/vmodal_mcp/main/readme_assets/dev_homepage.jpg" alt="A searchable wall of video and image moments" width="100%">
 
-<p align="center"><em>Stop scrubbing through timelines. Ask for the moment you need.</em></p>
+## Quick start
 
-## Your media library, now conversational
+You need Python 3.10 or newer and a VModal API key. You can request access from
+the [VModal contact page](https://v-modal.com/page/contact.ts).
 
-VModal MCP connects an MCP-compatible assistant to the VModal video and image API. You describe the outcome; your assistant selects the right typed tool, asks for missing details, and returns a focused result.
-
-| You say | VModal MCP does |
-|---|---|
-| “Find the person walking beside the ocean.” | Searches video and image content by meaning |
-| “Upload this folder to my travel collection.” | Runs signed single or bulk uploads |
-| “Index the collection and tell me when it is ready.” | Starts and monitors an indexing job |
-| “Show me the matching frame.” | Resolves and saves signed image results locally |
-| “How much have I used this month?” | Reads account usage and service statistics |
-
-No SDK code is required for everyday use. One local server gives your assistant two dozen focused tools for search, upload, collections, indexes, images, storage, and account status.
-
-## Pick your path
-
-| I am a… | Start here | What you get |
-|---|---|---|
-| **Normal user** | [Install and connect](#start-in-minutes) | Search and organize media using plain-English requests |
-| **Prosumer** | [Try complete workflows](#things-you-can-ask) | Upload → index → search without leaving your assistant |
-| **Pro user** | [Review the tool surface](#toolbox-for-pro-users) | Typed schemas, predictable names, local-file controls, and operational tools |
-
-## Start in minutes
-
-### 1. Get an API key
-
-Join the VModal beta through the [contact form](https://v-modal.com/page/contact.ts). Keep the key private and never commit it to a repository.
-
-### 2. Install the server
+### 1. Install VModal MCP
 
 ```bash
 python -m pip install --upgrade "git+https://github.com/v-modal/vmodal_mcp.git@main"
-vmodal-mcp --help
 ```
 
-Requires Python 3.10 or newer. The installer uses your active Python environment; it does not create a virtual or Conda environment.
+### 2. Run the simple test
 
-### 3. Connect your assistant
+Replace `PUT_API_KEY_HERE` with your API key:
 
-Replace `PUT_API_KEY_HERE` with your VModal API key.
+```bash
+export api_key=PUT_API_KEY_HERE
+vmodal test
+```
 
-<details open>
-<summary><strong>Claude Code</strong></summary>
+This uses the included 20-frame test video. It uploads the video, creates an
+index, waits until the index is ready, and runs a search. It normally takes
+about one minute. A successful run starts with `ok: true`.
+
+### 3. Connect your AI assistant
+
+Choose the command for your editor and replace `PUT_API_KEY_HERE`.
+
+#### Claude Code
 
 ```bash
 claude mcp add --scope user vmodal \
@@ -73,10 +47,7 @@ claude mcp add --scope user vmodal \
 claude mcp list
 ```
 
-</details>
-
-<details>
-<summary><strong>Codex</strong></summary>
+#### Codex
 
 ```bash
 codex mcp add --env api_key=PUT_API_KEY_HERE vmodal -- \
@@ -85,10 +56,7 @@ codex mcp add --env api_key=PUT_API_KEY_HERE vmodal -- \
 codex mcp list
 ```
 
-</details>
-
-<details>
-<summary><strong>GitHub Copilot CLI</strong></summary>
+#### GitHub Copilot CLI
 
 ```bash
 copilot mcp add vmodal --env api_key=PUT_API_KEY_HERE -- \
@@ -97,10 +65,9 @@ copilot mcp add vmodal --env api_key=PUT_API_KEY_HERE -- \
 copilot mcp list
 ```
 
-</details>
+#### Cursor
 
-<details>
-<summary><strong>Cursor and other JSON-based clients</strong></summary>
+Save this as `.cursor/mcp.json`:
 
 ```json
 {
@@ -116,91 +83,49 @@ copilot mcp list
 }
 ```
 
-For Cursor, save this as `.cursor/mcp.json` in the project or `~/.cursor/mcp.json` for every project.
+Restart your editor after connecting VModal.
 
-</details>
+### 4. Check the connection
 
-Restart your MCP client after adding the server. Then ask:
+Ask your assistant:
 
-> Call the VModal `health` tool, then call `auth_me`.
+> Use VModal to check the service health, then show my account profile.
 
-A successful `auth_me` result confirms that the API key is connected to your account.
+If both calls succeed, setup is complete.
 
-## Things you can ask
+## Try these prompts
 
-Copy, adapt, and send any of these prompts to your assistant.
+### Run the initial test with the included asset
 
-### Find a moment
+> Use the test video in `uinterface/mcp_python/src/mcp_server/assets`. Upload it
+> to a new test collection, create the index, wait until indexing finishes, then
+> search for “colorful test pattern.” Confirm that upload, indexing, and search
+> all succeeded.
 
-> Search my videos for “a cyclist crossing a bridge at sunset.” Return the best five matches and show me the top frame.
+### Upload and search a video
 
-### Build a searchable collection
+> Upload `./my_video.mp4` to a collection named `my_videos`. Create the index,
+> wait until it is ready, then search for “a person walking outside.”
 
-> Upload `./my_trip.mp4` to the `travel_diaries` collection, create its index, and monitor the job until it finishes.
+### Search existing videos
 
-### Process a folder
+> Search my videos for “a red car.” Show the best three matching frames.
 
-> Upload the MP4 files in `./camera_exports` to my `product_demos` collection. Summarize what succeeded and what needs attention.
+### Upload a folder
 
-### Curate and maintain
+> Upload all MP4 files from `./camera_exports` to a collection named
+> `camera_exports`. Tell me which files succeeded.
 
-> List my collection groups, add a description and tags to `launch_demo.mp4`, then show the current indexing jobs.
+### Check usage
 
-### Check the account
+> Show my current VModal usage and explain it simply.
 
-> Show my VModal usage and cache statistics. Explain the result in plain language.
+## Quick fixes
 
-Your MCP client can show tool calls before they run and ask for values that are missing. Destructive collection and index operations expose explicit dry-run and confirmation inputs.
+- `vmodal` or `vmodal-mcp` is not found: restart the terminal after installing.
+- `401`: check that the API key is correct and has not expired.
+- VModal tools do not appear: restart Claude, Codex, Cursor, or Copilot.
+- To rerun the full setup test: run `vmodal test` again. It creates a new test
+  collection each time.
 
-## How it fits together
-
-```mermaid
-flowchart LR
-    U[You] -->|plain English| A[Claude Code<br/>Codex · Cursor · Copilot]
-    A -->|MCP over local stdio| M[VModal MCP]
-    M -->|typed SDK calls| G[VModal gateway]
-    G --> V[(Video & image library)]
-    G --> I[(Indexes & usage)]
-```
-
-The MCP server follows the official [MCP client-server architecture](https://modelcontextprotocol.io/docs/learn/architecture). It runs locally and communicates with the client over standard input/output. Your API key is passed to that local process and used as the bearer identity for VModal gateway requests.
-
-## Toolbox for pro users
-
-| Area | Representative tools | Purpose |
-|---|---|---|
-| Connection | `health`, `auth_me` | Verify service health and identity |
-| Discovery | `search_video`, `collection_groups_list` | Search content and discover collection scopes |
-| Ingestion | `collection_video_upload`, `collection_video_upload_bulk`, `collection_upload_metadata` | Add one file, a folder, or metadata |
-| Collections | `collection_description_update`, `collection_add_assets`, `collection_delete` | Maintain collection content and metadata |
-| Indexes | `index_create`, `index_status`, `index_jobs_list`, `index_delete` | Control the indexing lifecycle |
-| Images | `image_get_url`, `image_get_url_bulk`, `image_get_from_url`, `image_get_bulk_from_urls` | Resolve and download matching frames |
-| Operations | `admin_usage`, `admin_user_stats`, `admin_cache_stats` | Inspect usage and runtime statistics |
-| Storage | `r2_credentials`, `r2_presign_upload_file`, `r2_presign_upload_folder_video` | Work with temporary R2 upload access |
-
-Tool inputs are generated from the VModal Python SDK where possible, keeping MCP behavior aligned with the reference client. Search responses are trimmed for assistant-friendly context, while typed schemas preserve required fields and defaults. Upload tools accept local filesystem paths instead of Python file objects.
-
-Your MCP client discovers the exact tool schemas from the running server. Restart the client after upgrading VModal MCP so it refreshes names, inputs, defaults, and descriptions.
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `vmodal-mcp: command not found` | Restart the client and add `python -c "import sysconfig; print(sysconfig.get_path('scripts'))"` to `PATH` |
-| `401` | Check that the API key is present, valid, and not expired |
-| `403` | The key is valid, but the account cannot perform that operation |
-| New tools are missing | Restart the MCP client so it reconnects and refreshes the tool list |
-| Unsure whether the server starts | Run `vmodal-mcp run --transport stdio` directly for a quick check |
-
-## Development
-
-```bash
-git clone https://github.com/v-modal/vmodal_mcp.git
-cd vmodal_mcp
-python -m pip install -e .
-vmodal-mcp --help
-```
-
----
-
-<p align="center"><strong>Your assistant already understands your question. Now it can understand your media.</strong></p>
+Keep your API key private and never commit it to a repository.
