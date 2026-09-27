@@ -12,6 +12,11 @@ def os_path_cleanup(dirpath: str) -> str:
     return dirpath
 
 
+def os_copytree(src: str, dst: str) -> str:
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    return dst
+
+
 def os_makedirs(dir_or_file: str):
     path = os.path.abspath(dir_or_file)
     name = os.path.basename(path)
@@ -39,4 +44,3 @@ def os_write_text(path: str, text: str) -> str:
 def os_read_bytes(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()
-

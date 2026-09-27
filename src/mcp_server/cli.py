@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os,sys
 import fire
 from src.utils.util_log import log_info, log_error, log_trace, log_warning
+from src.utils.util_base import os_copytree
 import time
 
 from vmodal.cli import CliApp
@@ -27,10 +28,16 @@ def str_api_key(api_key: str = "") -> str:
     )
 
 
-def os_test_video_path() -> str:
-    path = os.path.join(os.path.dirname(__file__), "assets", "test_video_20_frames.mp4")
+def os_assets_copy(folder: str = "") -> str:
+    src = os.path.join(os.path.dirname(__file__), "assets")
+    dst = os.path.join(os.path.abspath(folder or os.getcwd()), "assets")
+    return os_copytree(src, dst)
+
+
+def os_test_video_path(folder: str = "") -> str:
+    path = os.path.join(os_assets_copy(folder), "test_video_20_frames.mp4")
     if not os.path.isfile(path):
-        raise FileNotFoundError("Packaged test video is missing: %s" % path)
+        raise FileNotFoundError("Copied test video is missing: %s" % path)
     return path
 
 
@@ -192,6 +199,7 @@ class VmodalCli(CliApp):
 
 
 def main():
+    os_assets_copy()
     fire.Fire(VmodalCli)
 
 
