@@ -18,6 +18,15 @@ OK_STATUS = {"success", "succeeded", "done", "completed", "ok"}
 FAIL_STATUS = {"failed", "failure", "error", "cancelled", "canceled", "dead_letter"}
 
 
+def str_api_key(api_key: str = "") -> str:
+    return (
+        api_key
+        or os.environ.get("VMODAL_API_KEY", "")
+        or os.environ.get("api_key", "")
+        or os.environ.get("TEST_CLIENT_CLERK_USER_API_TOKEN", "")
+    )
+
+
 def os_test_video_path() -> str:
     path = os.path.join(os.path.dirname(__file__), "assets", "test_video_20_frames.mp4")
     if not os.path.isfile(path):
@@ -155,7 +164,7 @@ class VmodalCli(CliApp):
         api_key: str = "",
         timeout: float = 30,
     ):
-        key = api_key or os.environ.get("api_key", "") or os.environ.get("TEST_CLIENT_CLERK_USER_API_TOKEN", "")
+        key = str_api_key(api_key)
         super().__init__(
             base_url=base_url,
             user_id=user_id,

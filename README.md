@@ -11,11 +11,14 @@
 
 ## Quick start
 
-You need Python 3.10 or newer and a VModal API key. You can request access from
-the [VModal contact page](https://v-modal.com/page/contact.ts).
+You need Python 3.10 or newer and a VModal API key.
+
+
+### 0. Get a free API key by signing up at:
+  [VModal API KEY page](https://v-modal.com/page/contact.ts).
+
 
 ### 1. Install VModal MCP
-
 ```bash
 python -m pip install --upgrade "git+https://github.com/v-modal/vmodal_mcp.git@main"
 ```
@@ -25,13 +28,14 @@ python -m pip install --upgrade "git+https://github.com/v-modal/vmodal_mcp.git@m
 Replace `PUT_API_KEY_HERE` with your API key:
 
 ```bash
-export api_key=PUT_API_KEY_HERE
+export VMODAL_API_KEY=PUT_API_KEY_HERE
 vmodal test
 ```
 
 This uses the included 20-frame test video. It uploads the video, creates an
 index, waits until the index is ready, and runs a search. It normally takes
 about one minute. A successful run starts with `ok: true`.
+
 
 ### 3. Connect your AI assistant
 
@@ -85,40 +89,49 @@ Save this as `.cursor/mcp.json`:
 
 Restart your editor after connecting VModal.
 
+
 ### 4. Check the connection
-
 Ask your assistant:
+```
+Use VModal MCP to check the service health, then show my account profile.
 
-> Use VModal to check the service health, then show my account profile.
+Then, use VMODAL MCP to run test
 
+
+
+```
 If both calls succeed, setup is complete.
 
-## Try these prompts
 
+
+## Copy Paste these prompts
+```
 ### Run the initial test with the included asset
 
-> Use the test video in `uinterface/mcp_python/src/mcp_server/assets`. Upload it
-> to a new test collection, create the index, wait until indexing finishes, then
-> search for “colorful test pattern.” Confirm that upload, indexing, and search
-> all succeeded.
+Use the test video in `uinterface/mcp_python/src/mcp_server/assets`. Upload it
+to a new test collection, create the index, wait until indexing finishes, then
+search for “colorful test pattern.” Confirm that upload, indexing, and search
+all succeeded.
 
 ### Upload and search a video
 
-> Upload `./my_video.mp4` to a collection named `my_videos`. Create the index,
-> wait until it is ready, then search for “a person walking outside.”
+Upload `./my_video.mp4` to a collection named `my_videos`. Create the index,
+wait until it is ready, then search for “a person walking outside.”
 
 ### Search existing videos
 
-> Search my videos for “a red car.” Show the best three matching frames.
+Search my videos for “a red car.” Show the best three matching frames.
 
 ### Upload a folder
 
-> Upload all MP4 files from `./camera_exports` to a collection named
-> `camera_exports`. Tell me which files succeeded.
+Upload all MP4 files from `./camera_exports` to a collection named
+`camera_exports`. Tell me which files succeeded.
 
 ### Check usage
 
-> Show my current VModal usage and explain it simply.
+Show my current VModal usage and explain it simply.
+```
+
 
 ## Quick fixes
 
