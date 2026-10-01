@@ -413,31 +413,40 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     "image_get_from_url": {
         "target": "images.get_image_from_url",
-        "desc": "Fetch image bytes from a signed image URL and save them locally.",
+        "desc": "Fetch image bytes from a signed image URL and save them under ztmp/vmodal/{ymd_hms}/{collection_name}/.",
         "is_image": True,
         "handler": "image_bytes",
         "req_model": None,
         "resp_model": None,
         "trim": None,
-        "params": _mk_schema({"url_pre_signed": {"type": "string", "title": "url_pre_signed"}}, ["url_pre_signed"]),
+        "required_nonempty": ["collection_name"],
+        "params": _mk_schema(
+            {
+                "url_pre_signed": {"type": "string", "title": "url_pre_signed"},
+                "collection_name": {"type": "string", "title": "collection_name", "minLength": 1},
+            },
+            ["url_pre_signed", "collection_name"],
+        ),
     },
     "image_get_bulk_from_urls": {
         "target": "images.get_image_bulk_from_urls",
-        "desc": "Fetch multiple images from signed URLs and save them locally.",
+        "desc": "Fetch multiple images from signed URLs and save them under ztmp/vmodal/{ymd_hms}/{collection_name}/.",
         "is_image": True,
         "handler": "image_bulk",
         "req_model": None,
         "resp_model": ImageGetBulkResponse,
         "trim": None,
+        "required_nonempty": ["collection_name"],
         "params": _mk_schema(
             {
                 "urls": {
                     "type": "array",
                     "title": "urls",
                     "items": {"type": "string"},
-                }
+                },
+                "collection_name": {"type": "string", "title": "collection_name", "minLength": 1},
             },
-            ["urls"],
+            ["urls", "collection_name"],
         ),
     },
 }

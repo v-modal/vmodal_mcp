@@ -126,7 +126,12 @@ wait until it is ready, then search for “a person walking outside.”
 ---
 ### Search existing videos
 
-Search my videos for “a red car.” Show the best three matching frames.
+Search all streams in collection `my_videos` for “a red car.” Resolve and
+download the best three matching frames using collection name `my_videos`.
+Report the saved paths.
+
+Downloaded search frames are saved under
+`ztmp/vmodal/{ymd_hms}/{collection_name}/`.
 
 
 ---

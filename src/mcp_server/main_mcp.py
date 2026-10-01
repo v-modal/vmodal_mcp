@@ -7,6 +7,7 @@ import fire
 import inspect
 import asyncio
 import hashlib
+import time
 from contextlib import asynccontextmanager
 
 os.environ.setdefault("VMODAL_AUTH_CACHE_DIR", "ztmp/vmodal_auth")
@@ -83,6 +84,11 @@ def _safe_name(s: str) -> str:
     out = "".join(c if c.isalnum() or c in "._-" else "_" for c in base)
     out = out.strip("._") or "x"
     return out[:80]
+
+
+def _os_collection_image_dir(collection_name: str) -> str:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    return os.path.join("ztmp", "vmodal", stamp, _safe_name(collection_name))
 
 
 def _sniff_ext(raw: bytes) -> str:
@@ -222,10 +228,11 @@ async def _tool_output(
             raise RuntimeError(_tool_error(RuntimeError("missing server config")))
         handler = spec.get("handler", "")
         # offload blocking file IO + b64decode off the event loop
+        image_dir = str((context or {}).get("image_dir") or "")
         if handler == "image_bulk":
-            payload = await asyncio.to_thread(_tool_image_bulk_output, resp, cfg)
+            payload = await asyncio.to_thread(_tool_image_bulk_output, resp, cfg, image_dir)
         else:
-            payload = await asyncio.to_thread(_tool_image_output, resp, cfg, handler)
+            payload = await asyncio.to_thread(_tool_image_output, resp, cfg, handler, image_dir)
         return json.dumps(payload, ensure_ascii=False)
     if hasattr(resp, "model_dump"):
         payload = resp.model_dump(exclude_none=True)
@@ -300,7 +307,13 @@ def _check_upload_folder(path: str) -> str:
     return folder_path
 
 
-def _write_image_file(payload: Dict[str, Any], cfg: McpConfig, default_name: str, unique: bool = False) -> Dict[str, Any]:
+def _write_image_file(
+    payload: Dict[str, Any],
+    cfg: McpConfig,
+    default_name: str,
+    unique: bool = False,
+    image_dir: str = "",
+) -> Dict[str, Any]:
     data = _coerce_dict(payload)
     if isinstance(payload, (bytes, bytearray)):
         raw = bytes(payload)
@@ -323,35 +336,36 @@ def _write_image_file(payload: Dict[str, Any], cfg: McpConfig, default_name: str
     meta = _coerce_dict(payload)
     meta.pop("img_base64", None)
     meta.pop("content_base64", None)
-    _os_mkdirs(cfg.image_dir)
+    output_dir = image_dir or cfg.image_dir
+    _os_mkdirs(output_dir)
     base = os.path.splitext(default_name)[0] or "image"
     if unique:
         base = f"{base}_{hashlib.sha256(raw).hexdigest()[:12]}"
     name = f"{base}{_sniff_ext(raw)}"
-    path = os.path.join(cfg.image_dir, name)
+    path = os.path.join(output_dir, name)
     with open(path, "wb") as f:
         f.write(raw)
     return {"saved_path": path, "n_bytes": len(raw), "meta": meta}
 
 
-def _tool_image_output(payload: Any, cfg: McpConfig, handler_name: str) -> Dict[str, Any]:
+def _tool_image_output(payload: Any, cfg: McpConfig, handler_name: str, image_dir: str = "") -> Dict[str, Any]:
     data = _coerce_dict(payload)
     if isinstance(payload, (bytes, bytearray)) or handler_name == "image_bytes":
-        return _write_image_file(payload, cfg, "image.jpg", unique=True)
+        return _write_image_file(payload, cfg, "image.jpg", unique=True, image_dir=image_dir)
     if handler_name == "image_get":
         stream = _safe_name(data.get("stream_name") or "astream")
         frame = _safe_name(data.get("frame_id") or "frame")
         name = f"{stream}_{frame}.jpg"
-        return _write_image_file(data, cfg, name)
+        return _write_image_file(data, cfg, name, image_dir=image_dir)
     if handler_name == "image_get_fullpath":
         fullpath = data.get("fullpath", "image")
         base = os.path.splitext(_safe_name(fullpath))[0] or "image"
         name = f"{base}.jpg"
-        return _write_image_file(data, cfg, name)
+        return _write_image_file(data, cfg, name, image_dir=image_dir)
     return {"saved_path": "", "n_bytes": 0, "meta": data}
 
 
-def _tool_image_bulk_output(payload: Any, cfg: McpConfig) -> Dict[str, Any]:
+def _tool_image_bulk_output(payload: Any, cfg: McpConfig, image_dir: str = "") -> Dict[str, Any]:
     data = _coerce_dict(payload)
     items = data.get("records")
     if not isinstance(items, list):
@@ -363,8 +377,12 @@ def _tool_image_bulk_output(payload: Any, cfg: McpConfig) -> Dict[str, Any]:
         frame = _safe_name(item_data.get("frame_id") or str(idx))
         stream = _safe_name(item_data.get("stream_name") or "astream")
         name = f"{stream}_{frame}.jpg"
-        out.append(_write_image_file(item_data, cfg, name))
-    return {"saved_paths": [x["saved_path"] for x in out], "skipped": skipped}
+        out.append(_write_image_file(item_data, cfg, name, unique=True, image_dir=image_dir))
+    return {
+        "output_dir": image_dir or cfg.image_dir,
+        "saved_paths": [x["saved_path"] for x in out],
+        "skipped": skipped,
+    }
 
 
 def _build_handler(name: str, spec: Dict[str, Any]):
@@ -399,6 +417,9 @@ def _build_handler(name: str, spec: Dict[str, Any]):
         if target == "searches.search_video":
             verbose = bool(data.pop("verbose", False))
             context = {key: data.get(key) for key in ["mode", "group_name", "stream_name", "search_sources", "version_lancedb"]}
+        if target in ["images.get_image_from_url", "images.get_image_bulk_from_urls"]:
+            collection_name = data.pop("collection_name")
+            context = {"image_dir": _os_collection_image_dir(collection_name)}
         client = _ensure_client()
         call = _resolve_target(client, target)
         try:
