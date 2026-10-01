@@ -153,11 +153,12 @@ Show my current VModal usage and explain it simply.
 
 Keep your API key private and never commit it to a repository.
 
+
 ## Public MCP operations
 
 Each prompt below maps to one public VModal MCP tool. Replace the example
 values with your own paths, collection names, IDs, filenames, or URLs.
-
+```
 1. **Check service health — `health`**
 
    > Use VModal MCP to check the gateway and API health, then report the service version and status.
@@ -168,7 +169,11 @@ values with your own paths, collection names, IDs, filenames, or URLs.
 
 3. **Search videos and images — `search_video`**
 
-   > Use VModal MCP to search collection `my_videos`, stream `astream`, for “a person walking outside”; return the five best matching image frames.
+   > Use VModal MCP to search all streams in collection `my_videos` for “a person walking outside”; return the five best matching image frames.
+
+   `group_name` (the collection name) is required. Omitting `stream_name` searches
+   all streams. Image search uses index version 0 by default; if the collection's
+   image index uses another version, pass `version_lancedb` explicitly.
 
 4. **List collection groups — `collection_groups_list`**
 
@@ -225,3 +230,6 @@ values with your own paths, collection names, IDs, filenames, or URLs.
 17. **Show authentication cache statistics — `admin_cache_stats`**
 
     > Use VModal MCP to fetch my authentication and cache statistics, then explain the results briefly.
+
+
+```

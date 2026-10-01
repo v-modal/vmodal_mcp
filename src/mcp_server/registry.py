@@ -30,7 +30,7 @@ from vmodal.models import (
     ImageGetBulkResponse,
     HealthResponse,
 )
-from src.mcp_server.trim import trim_search, trim_jobs
+from src.mcp_server.trim import normalize_image_records, trim_search, trim_jobs
 
 
 def _mk_schema(
@@ -86,8 +86,25 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "target": "searches.search_video",
         "desc": "Run semantic search across video/image content.",
         "req_model": SearchRequest_frontui_In,
-        "schema_defaults": {"search_sources": ["image"]},
+        "schema_defaults": {
+            "search_sources": ["image"],
+            "stream_name": "",
+            "version_lancedb": 0,
+            "limit": 20,
+        },
+        "call_defaults": {
+            "mode": "vid_file",
+            "search_sources": ["image"],
+            "stream_name": "",
+            "version_lancedb": 0,
+            "limit": 20,
+        },
+        "call_defaults_null": ["version_lancedb"],
+        "required_nonempty": ["group_name"],
+        "schema_required": ["group_name"],
+        "schema_no_default": ["group_name"],
         "schema_overrides": {
+            "group_name": {"minLength": 1},
             "search_sources": {"items": {"type": "string", "enum": ["image"]}},
         },
         "resp_model": SearchResponse_frontui,
@@ -381,6 +398,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "req_model": None,
         "resp_model": ImageUrlBulkResponse,
         "trim": None,
+        "input_transform": normalize_image_records,
+        "input_transform_key": "records",
         "params": _mk_schema(
             {
                 "records": {
@@ -452,9 +471,17 @@ def tool_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
                 prop = dict(props[key])
                 prop.update(value)
                 props[key] = prop
+        for key in spec.get("schema_no_default") or []:
+            if key in props:
+                prop = dict(props[key])
+                prop.pop("default", None)
+                props[key] = prop
         props.pop("user_id", None)
         props.pop("userid", None)
         spec_schema["properties"] = props
-        required = spec_schema.get("required", [])
+        required = list(spec_schema.get("required", []) or [])
+        for key in spec.get("schema_required") or []:
+            if key not in required:
+                required.append(key)
         spec_schema["required"] = [x for x in required if x not in ("user_id", "userid")]
     return spec_schema

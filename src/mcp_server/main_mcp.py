@@ -204,10 +204,16 @@ def _tool_payload(payload: Dict[str, Any], schema: Dict[str, Any]) -> Dict[str, 
     return payload
 
 
-async def _tool_output(resp: Any, spec: Dict[str, Any], *, verbose: bool = False) -> str:
+async def _tool_output(
+    resp: Any,
+    spec: Dict[str, Any],
+    *,
+    verbose: bool = False,
+    context: Optional[Dict[str, Any]] = None,
+) -> str:
     if spec.get("trim"):
-        if verbose and spec.get("target") == "searches.search_video":
-            resp = spec["trim"](resp, verbose=verbose)
+        if spec.get("target") == "searches.search_video":
+            resp = spec["trim"](resp, verbose=verbose, context=context)
         else:
             resp = spec["trim"](resp)
     if spec.get("is_image"):
@@ -238,6 +244,39 @@ def _ensure_client() -> Client:
 
 def _tool_error(error: SdkError) -> str:
     return json.dumps(_str_tool_error(error))
+
+
+def _validation_error(detail: Any) -> RuntimeError:
+    return RuntimeError(json.dumps({"error_type": "ValidationError", "status_code": 422, "detail": detail}))
+
+
+def _apply_call_contract(data: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(data)
+    for key, value in (spec.get("call_defaults") or {}).items():
+        if key not in data or (data.get(key) is None and key in (spec.get("call_defaults_null") or [])):
+            data[key] = value
+    missing = [key for key in spec.get("required_nonempty") or [] if not str(data.get(key) or "").strip()]
+    if missing:
+        raise _validation_error({"missing_fields": missing})
+    transform = spec.get("input_transform")
+    if transform:
+        key = spec.get("input_transform_key") or "records"
+        try:
+            data[key] = transform(data.get(key))
+        except ValueError as exc:
+            detail = exc.args[0] if exc.args else str(exc)
+            raise _validation_error(detail)
+    return data
+
+
+def _str_search_error(exc: SdkError) -> str:
+    payload = _str_tool_error(exc)
+    detail = payload.get("detail")
+    text = str(detail or "").lower()
+    if any(key in text for key in ["img_emb", "image index", "lancedb", "table", "version"]):
+        hint = "Call collection_groups_list(mode=...) and retry with an explicit version_lancedb."
+        payload["detail"] = f"{detail} {hint}" if detail else hint
+    return json.dumps(payload)
 
 
 def _check_upload_path(path: str, cfg: McpConfig) -> str:
@@ -346,8 +385,8 @@ def _build_handler(name: str, spec: Dict[str, Any]):
             raise RuntimeError("mcp server lifecycle not initialized")
         if cfg and cfg.cfg_error:
             raise RuntimeError(json.dumps({"error_type": "AuthError", "status_code": 401, "detail": cfg.cfg_error}))
-        client = _ensure_client()
         data = _tool_payload(payload, schema)
+        data = _apply_call_contract(data, spec)
         if spec.get("is_upload"):
             key = spec.get("upload_path_key") or "path"
             file_path = _check_upload_path(data.get(key, ""), cfg)
@@ -355,12 +394,13 @@ def _build_handler(name: str, spec: Dict[str, Any]):
         if spec.get("is_upload_folder"):
             key = spec.get("upload_folder_key") or "folderpath_local"
             data[key] = _check_upload_folder(data.get(key, ""))
-        call = _resolve_target(client, target)
         verbose = False
+        context = None
         if target == "searches.search_video":
             verbose = bool(data.pop("verbose", False))
-            # keep MCP responses lean by default; callers can request full payload with verbose.
-            data.setdefault("limit", 20)
+            context = {key: data.get(key) for key in ["mode", "group_name", "stream_name", "search_sources", "version_lancedb"]}
+        client = _ensure_client()
+        call = _resolve_target(client, target)
         try:
             if spec.get("long_running"):
                 # SDK upload parts already have bounded timeouts and retry/resume.
@@ -374,9 +414,11 @@ def _build_handler(name: str, spec: Dict[str, Any]):
                                            "detail": f"tool timed out after {cfg.tool_timeout}s"}))
         except SdkError as exc:
             log_error("tool_fail", name, str(exc))
+            if target == "searches.search_video":
+                raise RuntimeError(_str_search_error(exc))
             raise RuntimeError(_tool_error(exc))
         out_spec = {**spec, "handler": handler_name}
-        return await _tool_output(out, out_spec, verbose=verbose)
+        return await _tool_output(out, out_spec, verbose=verbose, context=context)
 
     _handler.__name__ = f"{name}_handler"
     _handler.__signature__ = _build_signature(schema)
