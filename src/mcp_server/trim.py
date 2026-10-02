@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import os,sys
 from src.utils.util_log import log_info, log_error, log_trace, log_warning
 from vmodal.models import SearchResponse_frontui, IndexationJobsListResponse
+from src.mcp_server.utils import obj_dict as _item_dict
 
 
 def _text_snippet(raw: Any) -> str:
@@ -10,12 +11,6 @@ def _text_snippet(raw: Any) -> str:
         return ""
     text = str(raw)
     return text[:200]
-
-
-def _item_dict(item: Any) -> Dict[str, Any]:
-    if hasattr(item, "model_dump"):
-        item = item.model_dump(exclude_none=True)
-    return dict(item) if isinstance(item, dict) else {}
 
 
 def _first_value(item: Dict[str, Any], keys: List[str], default: Any = "") -> Any:
@@ -123,6 +118,9 @@ def trim_search(
         "data": rows,
         "trimmed": not verbose,
     }
+    if "version_lancedb" in context:
+        payload["version_lancedb"] = context["version_lancedb"]
+        payload["available_versions"] = context.get("available_versions", [])
     if not verbose:
         payload["n_total_returned"] = len(rows)
     return payload

@@ -18,6 +18,7 @@ from vmodal.errors import SdkError, AuthError, ApiError, ValidationFailed
 from src.utils.util_log import log_info, log_error, log_trace, log_warning
 from src.mcp_server.registry import TOOL_REGISTRY, tool_schema
 from src.mcp_server.config import McpConfig
+from src.mcp_server.utils import obj_dict as _coerce_dict, int_version_id, list_versions, collection_listing, bool_missing_index
 
 _ACTIVE_CFG: Optional[McpConfig] = None
 _ACTIVE_CLIENT: Optional[Client] = None
@@ -27,12 +28,14 @@ def _json_type_to_py(py_prop: Dict[str, Any]) -> Any:
     if "anyOf" in py_prop:
         non_null = [x for x in py_prop["anyOf"] if (x or {}).get("type") != "null"]
         if len(non_null) == 1:
-            return _json_type_to_py(non_null[0])
+            ann = _json_type_to_py(non_null[0])
+            return Optional[ann] if len(non_null) < len(py_prop["anyOf"]) else ann
     ptype = py_prop.get("type")
     if isinstance(ptype, list):
         non_null = [x for x in ptype if x != "null"]
         if len(non_null) == 1:
-            return _json_type_to_py({"type": non_null[0]})
+            ann = _json_type_to_py({"type": non_null[0]})
+            return Optional[ann] if "null" in ptype else ann
     if ptype == "string":
         return str
     if ptype == "integer":
@@ -120,14 +123,6 @@ def _os_dir_cap(dirpath: str, max_files: int = 500):
             os.remove(f)
         except Exception:
             pass
-
-
-def _coerce_dict(value: Any) -> Dict[str, Any]:
-    if hasattr(value, "model_dump"):
-        return value.model_dump(exclude_none=True)
-    if isinstance(value, dict):
-        return dict(value)
-    return {}
 
 
 def _str_tool_error(exc: Exception) -> Dict[str, Any]:
@@ -276,14 +271,51 @@ def _apply_call_contract(data: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str
     return data
 
 
-def _str_search_error(exc: SdkError) -> str:
+def _str_search_error(exc: SdkError, context: Optional[Dict[str, Any]] = None) -> str:
     payload = _str_tool_error(exc)
     detail = payload.get("detail")
     text = str(detail or "").lower()
     if any(key in text for key in ["img_emb", "image index", "lancedb", "table", "version"]):
-        hint = "Call collection_groups_list(mode=...) and retry with an explicit version_lancedb."
+        hint = "Call collection_list() to inspect available versions. Ensure this collection has a usable image index; an explicit version stays pinned."
         payload["detail"] = f"{detail} {hint}" if detail else hint
+        payload.update({key: (context or {}).get(key, []) for key in ["available_versions", "attempted_versions"]})
     return json.dumps(payload)
+
+
+async def _search_video(client: Client, data: Dict[str, Any], context: Dict[str, Any]):
+    """Select advertised revisions, retrying only missing-index failures."""
+    groups = [_coerce_dict(row) for row in _coerce_dict(await client.collections.list_groups(mode=data.get("mode"))).get("data", [])]
+    matches = [row for row in groups if row.get("group_name") == data["group_name"]
+               and (not data.get("mode") or row.get("mode") == data["mode"])]
+    if len(matches) != 1:
+        raise _validation_error({
+            "message": "Collection not found" if not matches else "Collection exists in multiple modes; specify mode",
+            "collection_name": data["group_name"],
+            "available_modes": sorted({row["mode"] for row in matches}),
+            "hint": "Call collection_list() for available collections and modes.",
+        })
+    group = matches[0]
+    data["mode"] = group["mode"]
+    try:
+        pinned = int_version_id(data.get("version_lancedb"))
+    except ValueError as exc:
+        raise _validation_error(str(exc)) from exc
+    versions = list_versions(group)
+    if pinned is not None and versions and pinned not in versions:
+        raise _validation_error({"message": "Index version is not available for this collection", "version_lancedb": pinned, "available_versions": versions})
+    candidates = [pinned] if pinned is not None else (versions or [None])
+    context["available_versions"] = versions
+    context["attempted_versions"] = []
+    for idx, version in enumerate(candidates):
+        context["attempted_versions"].append(version)
+        data["version_lancedb"] = version
+        context.update({key: data.get(key) for key in ["mode", "group_name", "stream_name", "version_lancedb"]})
+        try:
+            return await client.searches.search_video(**data)
+        except ApiError as exc:
+            if pinned is not None or idx == len(candidates) - 1 or not bool_missing_index(exc):
+                raise
+            log_warning("search_missing_index", data["group_name"], version)
 
 
 def _check_upload_path(path: str, cfg: McpConfig) -> str:
@@ -414,9 +446,19 @@ def _build_handler(name: str, spec: Dict[str, Any]):
             data[key] = _check_upload_folder(data.get(key, ""))
         verbose = False
         context = None
+        if handler_name == "find":
+            data["group_name"] = str(data.pop("collection_name")).strip()
+            data["stream_name"] = str(data.pop("sub_collection_name", "") or "").strip()
+            data["version_lancedb"] = data.pop("version_id", None)
+            data.setdefault("limit", 20)
+            data["search_sources"] = ["image"]
         if target == "searches.search_video":
             verbose = bool(data.pop("verbose", False))
+            data["group_name"] = str(data["group_name"]).strip()
+            data["stream_name"] = str(data.get("stream_name") or "").strip()
             context = {key: data.get(key) for key in ["mode", "group_name", "stream_name", "search_sources", "version_lancedb"]}
+        if handler_name == "subcollections_list":
+            context = {"collection_name": str(data.pop("collection_name", "") or "").strip(), "mode": data.pop("mode", None)}
         if target in ["images.get_image_from_url", "images.get_image_bulk_from_urls"]:
             collection_name = data.pop("collection_name")
             context = {"image_dir": _os_collection_image_dir(collection_name)}
@@ -428,7 +470,8 @@ def _build_handler(name: str, spec: Dict[str, Any]):
                 # An outer timeout would cancel a healthy large-file transfer.
                 out = await call(**data)
             else:
-                out = await asyncio.wait_for(call(**data), timeout=cfg.tool_timeout)
+                task = _search_video(client, data, context) if target == "searches.search_video" else call(**data)
+                out = await asyncio.wait_for(task, timeout=cfg.tool_timeout)
         except asyncio.TimeoutError:
             log_error("tool_fail", name, "timeout")
             raise RuntimeError(json.dumps({"error_type": "Timeout", "status_code": 504,
@@ -436,8 +479,10 @@ def _build_handler(name: str, spec: Dict[str, Any]):
         except SdkError as exc:
             log_error("tool_fail", name, str(exc))
             if target == "searches.search_video":
-                raise RuntimeError(_str_search_error(exc))
+                raise RuntimeError(_str_search_error(exc, context))
             raise RuntimeError(_tool_error(exc))
+        if handler_name in ["collection_list", "subcollections_list"]:
+            out = collection_listing(out, subcollections=handler_name == "subcollections_list", **(context or {}))
         out_spec = {**spec, "handler": handler_name}
         return await _tool_output(out, out_spec, verbose=verbose, context=context)
 
@@ -460,7 +505,21 @@ def build_server(config: Optional[McpConfig] = None) -> FastMCP:
     cfg = config or McpConfig.from_env()
     global _ACTIVE_CFG
     _ACTIVE_CFG = cfg
-    server = FastMCP(name="vmodal-mcp", lifespan=_lifespan)
+    server = FastMCP(
+        name="vmodal-mcp",
+        lifespan=_lifespan,
+        instructions=(
+            "For 'List all collections', call collection_list without a mode filter. "
+            "For 'List all sub-collections', call collection_subcollections_list and show "
+            "its table with Collection and Sub-collection columns. "
+            "For 'Find {query}' with 'Collection: {name}', call find with query_text and "
+            "collection_name. A blank Sub-collection means omit sub_collection_name "
+            "to search the whole collection. Use exact collection/sub-collection names "
+            "from discovery. Omit mode and version_id unless the user explicitly selects "
+            "them; the tool resolves them automatically. Never guess or reuse another "
+            "collection's index version."
+        ),
+    )
     _register_tools(server)
     return server
 
