@@ -156,7 +156,7 @@ a person walking outside.
 Run these commands in your terminal, with your API key:
 
 ```bash
-export VMODAL_API_KEY=PUT_API_KEY_HERE
+export api_key=PUT_API_KEY_HERE
 vmodal test
 ```
 

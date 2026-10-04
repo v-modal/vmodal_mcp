@@ -172,6 +172,8 @@ class VmodalCli(CliApp):
         timeout: float = 30,
     ):
         key = str_api_key(api_key)
+        if not (token or key):
+            raise SystemExit("API key required: export api_key=PUT_API_KEY_HERE (VMODAL_API_KEY also works), then re-run.")
         super().__init__(
             base_url=base_url,
             user_id=user_id,
@@ -199,7 +201,6 @@ class VmodalCli(CliApp):
 
 
 def main():
-    os_assets_copy()
     fire.Fire(VmodalCli)
 
 

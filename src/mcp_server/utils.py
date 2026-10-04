@@ -77,5 +77,5 @@ def collection_listing(resp: Any, subcollections: bool = False, collection_name:
 def bool_missing_index(exc: Any) -> bool:
     text = str(exc.details or exc.body or exc).lower()
     index = any(x in text for x in ("lancedb", "image index", "img_emb"))
-    missing = any(x in text for x in ("missing", "not found", "does not exist", "no such file", "no tablename resolved"))
+    missing = any(x in text for x in ("missing", "not found", "does not exist", "no such file", "no tablename resolved", "unable to resolve query embedding model"))
     return exc.status_code in (404, 500) and index and missing

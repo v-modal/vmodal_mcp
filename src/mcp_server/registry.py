@@ -149,7 +149,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "find": {
         "target": "searches.search_video",
         "handler": "find",
-        "desc": "Find a query sentence inside collection_name, e.g. city. Blank/omitted sub_collection_name searches all sub-collections. Resolves mode and index version automatically. Do not invent version_id; omit it unless pinning a listed vN version.",
+        "desc": "Find a query sentence inside collection_name, e.g. city. Blank/omitted sub_collection_name searches all sub-collections. Resolves mode and index version automatically. Do not invent version_id; omit it unless pinning a listed vN version. Set save_images=N to also save the N best matching pictures locally; each saved row gets saved_path.",
         "trim": trim_search,
         "required_nonempty": ["query_text", "collection_name"],
         "params": _mk_schema({
@@ -160,6 +160,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "version_id": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "string", "pattern": "^v?[0-9]+$"}, {"type": "null"}], "default": None},
             "limit": {"type": "integer", "minimum": 1, "default": 20},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
+            "save_images": {"type": "integer", "minimum": 0, "maximum": 20, "default": 0},
         }, ["query_text", "collection_name"]),
     },
     "collection_video_upload": {

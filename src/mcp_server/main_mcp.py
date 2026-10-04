@@ -17,6 +17,7 @@ from vmodal import Client
 from vmodal.errors import SdkError, AuthError, ApiError, ValidationFailed
 from src.utils.util_log import log_info, log_error, log_trace, log_warning
 from src.mcp_server.registry import TOOL_REGISTRY, tool_schema
+from src.mcp_server.trim import normalize_image_records
 from src.mcp_server.config import McpConfig
 from src.mcp_server.utils import obj_dict as _coerce_dict, int_version_id, list_versions, collection_listing, bool_missing_index
 
@@ -318,6 +319,31 @@ async def _search_video(client: Client, data: Dict[str, Any], context: Dict[str,
             log_warning("search_missing_index", data["group_name"], version)
 
 
+async def _find_save_images(client: Client, payload: Dict[str, Any], n_save: int, cfg: McpConfig) -> Dict[str, Any]:
+    """Save the best hits as pictures named after their sub-collection, video and time."""
+    # A frame can only be fetched for a hit that names its video and sub-collection.
+    rows = [row for row in payload["data"][:min(n_save, 20)] if row.get("filename") and row.get("stream_name")]
+    payload["saved_paths"] = []
+    if not rows:
+        if payload["data"]:
+            payload["save_error"] = "hits carry no video filename, pictures cannot be fetched"
+        return payload
+    image_dir = os.path.abspath(_os_collection_image_dir(rows[0]["group_name"]))
+    urls = _coerce_dict(await client.images.get_url_bulk(records=normalize_image_records(rows)))
+    for idx, rec in enumerate(urls.get("records") or []):
+        pos = rec.get("input_index", idx)
+        if not rec.get("found") or pos >= len(rows):
+            continue
+        row = rows[pos]
+        raw = await client.images.get_image_from_url(url_pre_signed=rec["url_pre_signed"])
+        name = "_".join(_safe_name(row[key]) for key in ["stream_name", "filename", "ts_unix_13digits"])
+        saved = await asyncio.to_thread(_write_image_file, raw, cfg, name + ".jpg", False, image_dir)
+        row["saved_path"] = saved["saved_path"]
+    payload["output_dir"] = image_dir
+    payload["saved_paths"] = [row["saved_path"] for row in rows if row.get("saved_path")]
+    return payload
+
+
 def _check_upload_path(path: str, cfg: McpConfig) -> str:
     if not str(path or "").strip():
         raise RuntimeError(json.dumps({"error_type": "ValidationError", "status_code": 422, "detail": "missing file_path"}))
@@ -446,7 +472,9 @@ def _build_handler(name: str, spec: Dict[str, Any]):
             data[key] = _check_upload_folder(data.get(key, ""))
         verbose = False
         context = None
+        n_save = 0
         if handler_name == "find":
+            n_save = int(data.pop("save_images", 0) or 0)
             data["group_name"] = str(data.pop("collection_name")).strip()
             data["stream_name"] = str(data.pop("sub_collection_name", "") or "").strip()
             data["version_lancedb"] = data.pop("version_id", None)
@@ -484,7 +512,16 @@ def _build_handler(name: str, spec: Dict[str, Any]):
         if handler_name in ["collection_list", "subcollections_list"]:
             out = collection_listing(out, subcollections=handler_name == "subcollections_list", **(context or {}))
         out_spec = {**spec, "handler": handler_name}
-        return await _tool_output(out, out_spec, verbose=verbose, context=context)
+        text = await _tool_output(out, out_spec, verbose=verbose, context=context)
+        if n_save:
+            try:
+                saved = await asyncio.wait_for(_find_save_images(client, json.loads(text), n_save, cfg), timeout=cfg.tool_timeout)
+            except (SdkError, ValueError, asyncio.TimeoutError) as exc:
+                # The hits are still good; report why the pictures are missing.
+                log_error("tool_fail", name, "save_images", str(exc))
+                saved = {**json.loads(text), "saved_paths": [], "save_error": str(exc) or "timeout"}
+            text = json.dumps(saved, ensure_ascii=False)
+        return text
 
     _handler.__name__ = f"{name}_handler"
     _handler.__signature__ = _build_signature(schema)
@@ -517,7 +554,8 @@ def build_server(config: Optional[McpConfig] = None) -> FastMCP:
             "to search the whole collection. Use exact collection/sub-collection names "
             "from discovery. Omit mode and version_id unless the user explicitly selects "
             "them; the tool resolves them automatically. Never guess or reuse another "
-            "collection's index version."
+            "collection's index version. When the user wants the matching pictures, call "
+            "find with save_images set to how many, and tell them the saved_path of each."
         ),
     )
     _register_tools(server)
