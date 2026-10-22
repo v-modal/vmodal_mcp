@@ -2,7 +2,94 @@ from typing import List, Dict, Tuple, Optional, Any, Union
 from dataclasses import dataclass
 import os,sys
 import fire
+import base64
+import io
+import json
+import re
+from pathlib import Path
+from PIL import Image
 from src.utils.util_log import log_info, log_error, log_trace, log_warning
+
+
+def str_frame_component(value: Any) -> str:
+    text = re.sub(r"[^\w.-]", "_", str(value or "").strip()).strip("._")
+    if not text:
+        raise ValueError("empty_path_component")
+    return text
+
+
+def os_frame_path(root: str, row: Dict[str, Any]) -> str:
+    root = Path(root).expanduser().resolve()
+    ts = str(row.get("ts_unix_13digits") or "")
+    if not re.fullmatch(r"[0-9]{13}", ts):
+        raise ValueError("invalid_timestamp")
+    filename = str(row.get("filename") or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = str_frame_component(os.path.splitext(filename)[0])
+    path = root / str_frame_component(row.get("group_name")) / str_frame_component(row.get("stream_name")) / f"{stem}_{ts}.jpg"
+    path = path.resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("path_outside_root")
+    return str(path)
+
+
+def image_bytes(payload: Any) -> bytes:
+    if isinstance(payload, (bytes, bytearray)):
+        return bytes(payload)
+    data = obj_dict(payload)
+    return base64.b64decode(data.get("img_base64") or data.get("content_base64") or "", validate=True)
+
+
+def image_validate(raw: bytes) -> None:
+    if not raw:
+        raise ValueError("empty_image")
+    with Image.open(io.BytesIO(raw)) as img:
+        img.load()
+
+
+def os_read_image(path: str) -> bytes:
+    with open(os.path.expanduser(path), "rb") as fh:
+        return fh.read()
+
+
+def os_save_frame(payload: Any, path: str, record: Dict[str, Any]) -> Dict[str, Any]:
+    raw = image_bytes(payload)
+    with Image.open(io.BytesIO(raw)) as img:
+        img.load()
+        if img.format == "JPEG" and img.mode == "RGB":
+            jpeg = raw
+        else:
+            rgb = Image.new("RGB", img.size, "white")
+            rgba = img.convert("RGBA")
+            rgb.paste(rgba, mask=rgba.getchannel("A"))
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG")
+            jpeg = buf.getvalue()
+    if not jpeg.startswith(b"\xff\xd8\xff"):
+        raise ValueError("invalid_jpeg")
+    # Exclusive creation also prevents overwriting a frame saved in an earlier call.
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # A sidecar distinguishes selectors that sanitize to the same deterministic name.
+    owner_path = path + ".json"
+    try:
+        with open(owner_path, "x", encoding="utf-8") as fh:
+            json.dump(record, fh, sort_keys=True)
+    except FileExistsError:
+        with open(owner_path, encoding="utf-8") as fh:
+            if json.load(fh) != record:
+                raise ValueError("path_conflict")
+    if os.path.exists(path):
+        with open(path, "rb") as fh:
+            if fh.read() != jpeg:
+                raise ValueError("path_conflict")
+    else:
+        try:
+            with open(path, "xb") as fh:
+                fh.write(jpeg)
+        except FileExistsError:
+            with open(path, "rb") as fh:
+                if fh.read() != jpeg:
+                    raise ValueError("path_conflict")
+    return {"saved_path": path, "n_bytes": len(jpeg)}
 
 
 def obj_dict(value: Any) -> Dict[str, Any]:

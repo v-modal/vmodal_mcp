@@ -149,11 +149,14 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "find": {
         "target": "searches.search_video",
         "handler": "find",
-        "desc": "Find a query sentence inside collection_name, e.g. city. Blank/omitted sub_collection_name searches all sub-collections. Resolves mode and index version automatically. Do not invent version_id; omit it unless pinning a listed vN version. Set save_images=N to also save the N best matching pictures locally; each saved row gets saved_path.",
+        "desc": "Search collection_name with text, one image source, or both. Use image_query for plain base64, image_path for a server-local image, or image_url for a VMX signed URL; never put URLs in image_query. Resolves mode/version automatically. save_images=0..20 saves matching JPEG frames and returns absolute saved_path values.",
         "trim": trim_search,
-        "required_nonempty": ["query_text", "collection_name"],
+        "required_nonempty": ["collection_name"],
         "params": _mk_schema({
-            "query_text": {"type": "string", "minLength": 1},
+            "query_text": {"type": "string", "default": ""},
+            "image_query": {"type": "string", "default": "", "description": "Plain base64 image bytes, without data URI prefix or URL."},
+            "image_path": {"type": "string", "default": "", "description": "Image path on the MCP server filesystem."},
+            "image_url": {"type": "string", "default": "", "description": "VMX signed image URL; fetched through the SDK."},
             "collection_name": {"type": "string", "minLength": 1},
             "sub_collection_name": {"type": "string", "default": ""},
             "mode": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
@@ -161,7 +164,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 1, "default": 20},
             "offset": {"type": "integer", "minimum": 0, "default": 0},
             "save_images": {"type": "integer", "minimum": 0, "maximum": 20, "default": 0},
-        }, ["query_text", "collection_name"]),
+        }, ["collection_name"]),
     },
     "collection_video_upload": {
         "target": "collections.video_upload",
@@ -448,41 +451,52 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     },
     "image_get_from_url": {
         "target": "images.get_image_from_url",
-        "desc": "Fetch image bytes from a signed image URL and save them under ztmp/vmodal/{ymd_hms}/{collection_name}/.",
+        "desc": "Fetch a VMX signed URL and save a JPEG with canonical frame coordinates. Requires record metadata; prefer image_download_from_records for search hits.",
         "is_image": True,
         "handler": "image_bytes",
         "req_model": None,
         "resp_model": None,
         "trim": None,
-        "required_nonempty": ["collection_name"],
         "params": _mk_schema(
             {
                 "url_pre_signed": {"type": "string", "title": "url_pre_signed"},
-                "collection_name": {"type": "string", "title": "collection_name", "minLength": 1},
+                "record": {"type": "object", "additionalProperties": True},
+                "root_folder": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
             },
-            ["url_pre_signed", "collection_name"],
+            ["url_pre_signed", "record"],
         ),
     },
     "image_get_bulk_from_urls": {
         "target": "images.get_image_bulk_from_urls",
-        "desc": "Fetch multiple images from signed URLs and save them under ztmp/vmodal/{ymd_hms}/{collection_name}/.",
+        "desc": "Fetch 1..20 VMX signed URLs with aligned frame records and save canonical JPEG paths. Prefer image_download_from_records for search hits.",
         "is_image": True,
         "handler": "image_bulk",
         "req_model": None,
         "resp_model": ImageGetBulkResponse,
         "trim": None,
-        "required_nonempty": ["collection_name"],
         "params": _mk_schema(
             {
                 "urls": {
                     "type": "array",
                     "title": "urls",
                     "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 20,
                 },
-                "collection_name": {"type": "string", "title": "collection_name", "minLength": 1},
+                "records": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "object", "additionalProperties": True}},
+                "root_folder": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
             },
-            ["urls", "collection_name"],
+            ["urls", "records"],
         ),
+    },
+    "image_download_from_records": {
+        "target": "images.get_url_bulk",
+        "handler": "image_records",
+        "desc": "Download 1..20 search result records as JPEG frames without copying signed URLs. Preserves input order and reports each failure. Paths: root/collection/stream/assetstem_timestamp.jpg; root defaults to MCP_IMAGE_DIR.",
+        "params": _mk_schema({
+            "records": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "object", "additionalProperties": True}},
+            "root_folder": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
+        }, ["records"]),
     },
 }
 

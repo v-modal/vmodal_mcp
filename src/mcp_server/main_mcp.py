@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, Optional, Literal, Annotated
 import os
 import sys
 import base64
@@ -6,20 +6,20 @@ import json
 import fire
 import inspect
 import asyncio
-import hashlib
-import time
 from contextlib import asynccontextmanager
 
 os.environ.setdefault("VMODAL_AUTH_CACHE_DIR", "ztmp/vmodal_auth")
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 from vmodal import Client
 from vmodal.errors import SdkError, AuthError, ApiError, ValidationFailed
 from src.utils.util_log import log_info, log_error, log_trace, log_warning
 from src.mcp_server.registry import TOOL_REGISTRY, tool_schema
-from src.mcp_server.trim import normalize_image_records
+from src.mcp_server.trim import normalize_image_records, str_frame_error
 from src.mcp_server.config import McpConfig
 from src.mcp_server.utils import obj_dict as _coerce_dict, int_version_id, list_versions, collection_listing, bool_missing_index
+from src.mcp_server.utils import os_frame_path, os_save_frame, os_read_image, image_validate
 
 _ACTIVE_CFG: Optional[McpConfig] = None
 _ACTIVE_CLIENT: Optional[Client] = None
@@ -62,6 +62,15 @@ def _build_signature(schema: Dict[str, Any]) -> inspect.Signature:
     opt_params = []
     for key, value in properties.items():
         ann = _json_type_to_py(value if isinstance(value, dict) else {})
+        bounds = {new: value[old] for old, new in [("minLength", "min_length"), ("minimum", "ge"),
+                  ("maximum", "le"), ("description", "description")]
+                  if old in value}
+        # Publish batch bounds while retaining the handler's JSON 422 error contract.
+        batch_bounds = {key: value[key] for key in ["minItems", "maxItems"] if key in value}
+        if batch_bounds:
+            bounds["json_schema_extra"] = batch_bounds
+        if bounds:
+            ann = Annotated[ann, Field(**bounds)]
         if key in required:
             default = inspect.Parameter.empty
         else:
@@ -77,39 +86,6 @@ def _build_signature(schema: Dict[str, Any]) -> inspect.Signature:
         else:
             opt_params.append(param)
     return inspect.Signature(req_params + opt_params)
-
-def _os_mkdirs(path: str):
-    if path:
-        os.makedirs(path, exist_ok=True)
-
-
-def _safe_name(s: str) -> str:
-    base = os.path.basename(str(s or "").strip())
-    out = "".join(c if c.isalnum() or c in "._-" else "_" for c in base)
-    out = out.strip("._") or "x"
-    return out[:80]
-
-
-def _os_collection_image_dir(collection_name: str) -> str:
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    return os.path.join("ztmp", "vmodal", stamp, _safe_name(collection_name))
-
-
-def _sniff_ext(raw: bytes) -> str:
-    """Detect the real image extension from magic bytes; the backend can return
-    webp/png/etc, not just jpeg (image uploads get converted server-side)."""
-    if raw[:8] == b"\x89PNG\r\n\x1a\n":
-        return ".png"
-    if raw[:3] == b"\xff\xd8\xff":
-        return ".jpg"
-    if raw[:6] in (b"GIF87a", b"GIF89a"):
-        return ".gif"
-    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        return ".webp"
-    if raw[:2] == b"BM":
-        return ".bmp"
-    return ".jpg"
-
 
 def _os_dir_cap(dirpath: str, max_files: int = 500):
     if not dirpath or not os.path.isdir(dirpath):
@@ -218,18 +194,6 @@ async def _tool_output(
             resp = spec["trim"](resp, verbose=verbose, context=context)
         else:
             resp = spec["trim"](resp)
-    if spec.get("is_image"):
-        cfg = _ACTIVE_CFG
-        if not isinstance(cfg, McpConfig):
-            raise RuntimeError(_tool_error(RuntimeError("missing server config")))
-        handler = spec.get("handler", "")
-        # offload blocking file IO + b64decode off the event loop
-        image_dir = str((context or {}).get("image_dir") or "")
-        if handler == "image_bulk":
-            payload = await asyncio.to_thread(_tool_image_bulk_output, resp, cfg, image_dir)
-        else:
-            payload = await asyncio.to_thread(_tool_image_output, resp, cfg, handler, image_dir)
-        return json.dumps(payload, ensure_ascii=False)
     if hasattr(resp, "model_dump"):
         payload = resp.model_dump(exclude_none=True)
     elif isinstance(resp, (dict, list, str, int, float, bool)) or resp is None:
@@ -320,28 +284,125 @@ async def _search_video(client: Client, data: Dict[str, Any], context: Dict[str,
 
 
 async def _find_save_images(client: Client, payload: Dict[str, Any], n_save: int, cfg: McpConfig) -> Dict[str, Any]:
-    """Save the best hits as pictures named after their sub-collection, video and time."""
-    # A frame can only be fetched for a hit that names its video and sub-collection.
-    rows = [row for row in payload["data"][:min(n_save, 20)] if row.get("filename") and row.get("stream_name")]
-    payload["saved_paths"] = []
-    if not rows:
-        if payload["data"]:
-            payload["save_error"] = "hits carry no video filename, pictures cannot be fetched"
-        return payload
-    image_dir = os.path.abspath(_os_collection_image_dir(rows[0]["group_name"]))
-    urls = _coerce_dict(await client.images.get_url_bulk(records=normalize_image_records(rows)))
-    for idx, rec in enumerate(urls.get("records") or []):
-        pos = rec.get("input_index", idx)
-        if not rec.get("found") or pos >= len(rows):
-            continue
-        row = rows[pos]
-        raw = await client.images.get_image_from_url(url_pre_signed=rec["url_pre_signed"])
-        name = "_".join(_safe_name(row[key]) for key in ["stream_name", "filename", "ts_unix_13digits"])
-        saved = await asyncio.to_thread(_write_image_file, raw, cfg, name + ".jpg", False, image_dir)
-        row["saved_path"] = saved["saved_path"]
-    payload["output_dir"] = image_dir
-    payload["saved_paths"] = [row["saved_path"] for row in rows if row.get("saved_path")]
+    rows = payload["data"][:n_save]
+    saved = await _image_download_records(client, rows, cfg, allow_empty=True)
+    payload.update(saved)
+    for row, result in zip(rows, saved["results"]):
+        if result["saved_path"]:
+            row["saved_path"] = result["saved_path"]
     return payload
+
+
+async def _find_image_input(client: Client, data: Dict[str, Any]) -> None:
+    text = str(data.get("query_text") or "").strip()
+    sources = [key for key in ("image_query", "image_path", "image_url") if data.get(key)]
+    if len(sources) > 1 or (not text and not sources):
+        raise _validation_error("Provide nonblank query_text or one image source; at most one image source is allowed")
+    data["query_text"] = text
+    path = data.pop("image_path", "")
+    url = data.pop("image_url", "")
+    query = data.pop("image_query", "")
+    if not sources:
+        return
+    try:
+        if path:
+            raw = await asyncio.to_thread(os_read_image, path)
+        elif url:
+            # The SDK endpoint validates VMX signatures and preserves expired-URL errors.
+            raw = await client.images.get_image_from_url(url_pre_signed=url)
+        else:
+            raw = base64.b64decode(query, validate=True)
+        await asyncio.to_thread(image_validate, raw)
+    except (ValueError, OSError) as exc:
+        raise _validation_error("Empty, unreadable, or malformed image input") from exc
+    data["image_query"] = base64.b64encode(raw).decode("ascii")
+
+
+def _image_batch(records: Any, allow_empty: bool = False) -> None:
+    if not isinstance(records, list) or len(records) > 20 or (not records and not allow_empty):
+        raise _validation_error("records must contain 1 to 20 search result objects")
+
+
+def _str_image_error(exc: SdkError, urls: Any = None) -> Dict[str, Any]:
+    text = json.dumps(_str_tool_error(exc))
+    for url in urls or []:
+        if url:
+            text = text.replace(json.dumps(url)[1:-1], "<signed image URL>")
+    return json.loads(text)
+
+
+async def _image_download_records(client: Client, records: Any, cfg: McpConfig,
+                                  root_folder: Optional[str] = None, urls: Any = None,
+                                  allow_empty: bool = False) -> Dict[str, Any]:
+    """Validate each frame, sign valid selectors, and retain every input position."""
+    _image_batch(records, allow_empty)
+    if urls is not None and (not isinstance(urls, list) or len(urls) != len(records)
+                             or any(not isinstance(url, str) or not url.strip() for url in urls)):
+        raise _validation_error("urls and records must be nonempty and aligned one to one")
+    root = os.path.realpath(os.path.expanduser(root_folder or cfg.image_dir))
+    results = [{"input_index": i, "found": False, "saved_path": "", "error": ""} for i in range(len(records))]
+    valid, positions, paths = [], [], []
+    owners = {}
+    for i, raw in enumerate(records):
+        try:
+            row = normalize_image_records([raw])[0]
+            error = str_frame_error(row)
+            if error:
+                raise ValueError(error)
+            path = os_frame_path(root, row)
+            if path in owners and owners[path] != row:
+                raise ValueError("path_conflict")
+            owners[path] = row
+            valid.append(row)
+            positions.append(i)
+            paths.append(path)
+        except ValueError as exc:
+            detail = exc.args[0]
+            if isinstance(detail, dict):
+                field = detail["missing_fields"][0]
+                detail = {"filename": "missing_filename", "stream_name": "missing_stream",
+                          "ts_unix_13digits": "invalid_timestamp"}.get(field, f"missing_{field}")
+            results[i]["error"] = str(detail)
+    found = {}
+    if valid:
+        try:
+            if urls is None:
+                reply = await asyncio.wait_for(client.images.get_url_bulk(records=valid), timeout=cfg.tool_timeout)
+                for item in _coerce_dict(reply).get("records") or []:
+                    item = _coerce_dict(item)
+                    index = item.get("input_index")
+                    if type(index) is int and 0 <= index < len(valid):
+                        if index in found:
+                            found[index] = {"error": "duplicate_input_index"}
+                        else:
+                            found[index] = item
+            else:
+                found = {j: {"found": True, "url_pre_signed": urls[i]} for j, i in enumerate(positions)}
+        except (SdkError, asyncio.TimeoutError) as exc:
+            error = _str_image_error(exc, urls) if isinstance(exc, SdkError) else "timeout"
+            for i in positions:
+                results[i]["error"] = error
+    for j, i in enumerate(positions):
+        if results[i]["error"]:
+            continue
+        item = found.get(j, {})
+        url = item.get("url_pre_signed")
+        if not item.get("found") or not url:
+            results[i]["error"] = "duplicate_input_index" if item.get("error") == "duplicate_input_index" else "frame_not_found"
+            continue
+        try:
+            raw = await asyncio.wait_for(client.images.get_image_from_url(url_pre_signed=url), timeout=cfg.tool_timeout)
+            saved = await asyncio.to_thread(os_save_frame, raw, paths[j], valid[j])
+            results[i].update(found=True, saved_path=saved["saved_path"])
+        except SdkError as exc:
+            results[i]["error"] = _str_image_error(exc, [url])
+        except asyncio.TimeoutError:
+            results[i]["error"] = "timeout"
+        except (ValueError, OSError) as exc:
+            results[i]["error"] = str(exc) if str(exc) == "path_conflict" else "image_conversion_or_write_failed"
+    saved_paths = [item["saved_path"] for item in results if item["saved_path"]]
+    return {"results": results, "saved_paths": saved_paths, "n_requested": len(records),
+            "n_saved": len(saved_paths), "n_failed": len(records) - len(saved_paths), "output_dir": root}
 
 
 def _check_upload_path(path: str, cfg: McpConfig) -> str:
@@ -363,84 +424,6 @@ def _check_upload_folder(path: str) -> str:
     if not os.path.isdir(folder_path):
         raise RuntimeError(json.dumps({"error_type": "ValidationError", "status_code": 422, "detail": f"missing folder: {folder_path}"}))
     return folder_path
-
-
-def _write_image_file(
-    payload: Dict[str, Any],
-    cfg: McpConfig,
-    default_name: str,
-    unique: bool = False,
-    image_dir: str = "",
-) -> Dict[str, Any]:
-    data = _coerce_dict(payload)
-    if isinstance(payload, (bytes, bytearray)):
-        raw = bytes(payload)
-    else:
-        text = str(data.get("img_base64") or data.get("content_base64") or "")
-        raw = b""
-        if text:
-            try:
-                raw = base64.b64decode(text, validate=False)
-            except Exception:
-                meta = _coerce_dict(payload)
-                meta.pop("img_base64", None)
-                meta.pop("content_base64", None)
-                return {"saved_path": "", "n_bytes": 0, "error": "bad base64", "meta": meta}
-    if not raw:
-        meta = _coerce_dict(payload)
-        meta.pop("img_base64", None)
-        meta.pop("content_base64", None)
-        return {"saved_path": "", "n_bytes": 0, "meta": meta}
-    meta = _coerce_dict(payload)
-    meta.pop("img_base64", None)
-    meta.pop("content_base64", None)
-    output_dir = image_dir or cfg.image_dir
-    _os_mkdirs(output_dir)
-    base = os.path.splitext(default_name)[0] or "image"
-    if unique:
-        base = f"{base}_{hashlib.sha256(raw).hexdigest()[:12]}"
-    name = f"{base}{_sniff_ext(raw)}"
-    path = os.path.join(output_dir, name)
-    with open(path, "wb") as f:
-        f.write(raw)
-    return {"saved_path": path, "n_bytes": len(raw), "meta": meta}
-
-
-def _tool_image_output(payload: Any, cfg: McpConfig, handler_name: str, image_dir: str = "") -> Dict[str, Any]:
-    data = _coerce_dict(payload)
-    if isinstance(payload, (bytes, bytearray)) or handler_name == "image_bytes":
-        return _write_image_file(payload, cfg, "image.jpg", unique=True, image_dir=image_dir)
-    if handler_name == "image_get":
-        stream = _safe_name(data.get("stream_name") or "astream")
-        frame = _safe_name(data.get("frame_id") or "frame")
-        name = f"{stream}_{frame}.jpg"
-        return _write_image_file(data, cfg, name, image_dir=image_dir)
-    if handler_name == "image_get_fullpath":
-        fullpath = data.get("fullpath", "image")
-        base = os.path.splitext(_safe_name(fullpath))[0] or "image"
-        name = f"{base}.jpg"
-        return _write_image_file(data, cfg, name, image_dir=image_dir)
-    return {"saved_path": "", "n_bytes": 0, "meta": data}
-
-
-def _tool_image_bulk_output(payload: Any, cfg: McpConfig, image_dir: str = "") -> Dict[str, Any]:
-    data = _coerce_dict(payload)
-    items = data.get("records")
-    if not isinstance(items, list):
-        items = []
-    skipped = max(0, len(items) - 20)
-    out = []
-    for idx, item in enumerate(items[:20]):
-        item_data = _coerce_dict(item)
-        frame = _safe_name(item_data.get("frame_id") or str(idx))
-        stream = _safe_name(item_data.get("stream_name") or "astream")
-        name = f"{stream}_{frame}.jpg"
-        out.append(_write_image_file(item_data, cfg, name, unique=True, image_dir=image_dir))
-    return {
-        "output_dir": image_dir or cfg.image_dir,
-        "saved_paths": [x["saved_path"] for x in out],
-        "skipped": skipped,
-    }
 
 
 def _build_handler(name: str, spec: Dict[str, Any]):
@@ -475,6 +458,8 @@ def _build_handler(name: str, spec: Dict[str, Any]):
         n_save = 0
         if handler_name == "find":
             n_save = int(data.pop("save_images", 0) or 0)
+            if not 0 <= n_save <= 20:
+                raise _validation_error("save_images must be between 0 and 20")
             data["group_name"] = str(data.pop("collection_name")).strip()
             data["stream_name"] = str(data.pop("sub_collection_name", "") or "").strip()
             data["version_lancedb"] = data.pop("version_id", None)
@@ -484,42 +469,53 @@ def _build_handler(name: str, spec: Dict[str, Any]):
             verbose = bool(data.pop("verbose", False))
             data["group_name"] = str(data["group_name"]).strip()
             data["stream_name"] = str(data.get("stream_name") or "").strip()
-            context = {key: data.get(key) for key in ["mode", "group_name", "stream_name", "search_sources", "version_lancedb"]}
+            data.setdefault("offset", 0)
+            if type(data.get("limit")) is not int or data["limit"] < 1 or type(data["offset"]) is not int or data["offset"] < 0:
+                raise _validation_error("limit must be positive and offset must be nonnegative integers")
+            context = {key: data.get(key) for key in ["mode", "group_name", "stream_name", "search_sources", "version_lancedb", "limit", "offset"]}
         if handler_name == "subcollections_list":
             context = {"collection_name": str(data.pop("collection_name", "") or "").strip(), "mode": data.pop("mode", None)}
-        if target in ["images.get_image_from_url", "images.get_image_bulk_from_urls"]:
-            collection_name = data.pop("collection_name")
-            context = {"image_dir": _os_collection_image_dir(collection_name)}
         client = _ensure_client()
-        call = _resolve_target(client, target)
         try:
+            if handler_name in {"image_records", "image_bytes", "image_bulk"}:
+                records = [data.get("record")] if handler_name == "image_bytes" else data.get("records")
+                if handler_name == "image_bytes" and not isinstance(data.get("record"), dict):
+                    raise _validation_error("record metadata is required alongside url_pre_signed")
+                urls = [data.get("url_pre_signed")] if handler_name == "image_bytes" else data.get("urls")
+                if handler_name == "image_bulk" and urls is None:
+                    raise _validation_error("urls and aligned records are required")
+                out = await _image_download_records(client, records, cfg, data.get("root_folder"), urls)
+                return json.dumps(out, ensure_ascii=False)
+            call = _resolve_target(client, target)
             if spec.get("long_running"):
                 # SDK upload parts already have bounded timeouts and retry/resume.
                 # An outer timeout would cancel a healthy large-file transfer.
                 out = await call(**data)
             else:
-                task = _search_video(client, data, context) if target == "searches.search_video" else call(**data)
+                async def search_task():
+                    if handler_name == "find":
+                        await _find_image_input(client, data)
+                    return await _search_video(client, data, context)
+                task = search_task() if target == "searches.search_video" else call(**data)
                 out = await asyncio.wait_for(task, timeout=cfg.tool_timeout)
         except asyncio.TimeoutError:
             log_error("tool_fail", name, "timeout")
             raise RuntimeError(json.dumps({"error_type": "Timeout", "status_code": 504,
                                            "detail": f"tool timed out after {cfg.tool_timeout}s"}))
         except SdkError as exc:
-            log_error("tool_fail", name, str(exc))
+            log_error("tool_fail", name, exc.__class__.__name__)
             if target == "searches.search_video":
-                raise RuntimeError(_str_search_error(exc, context))
+                error = _str_search_error(exc, context)
+                if data.get("image_query"):
+                    error = error.replace(data["image_query"], "<image bytes>")
+                raise RuntimeError(error)
             raise RuntimeError(_tool_error(exc))
         if handler_name in ["collection_list", "subcollections_list"]:
             out = collection_listing(out, subcollections=handler_name == "subcollections_list", **(context or {}))
         out_spec = {**spec, "handler": handler_name}
         text = await _tool_output(out, out_spec, verbose=verbose, context=context)
         if n_save:
-            try:
-                saved = await asyncio.wait_for(_find_save_images(client, json.loads(text), n_save, cfg), timeout=cfg.tool_timeout)
-            except (SdkError, ValueError, asyncio.TimeoutError) as exc:
-                # The hits are still good; report why the pictures are missing.
-                log_error("tool_fail", name, "save_images", str(exc))
-                saved = {**json.loads(text), "saved_paths": [], "save_error": str(exc) or "timeout"}
+            saved = await _find_save_images(client, json.loads(text), n_save, cfg)
             text = json.dumps(saved, ensure_ascii=False)
         return text
 
@@ -555,7 +551,10 @@ def build_server(config: Optional[McpConfig] = None) -> FastMCP:
             "from discovery. Omit mode and version_id unless the user explicitly selects "
             "them; the tool resolves them automatically. Never guess or reuse another "
             "collection's index version. When the user wants the matching pictures, call "
-            "find with save_images set to how many, and tell them the saved_path of each."
+            "find with save_images set to how many, and tell them the saved_path of each. "
+            "For an image query use image_path or image_url; never put a URL in image_query. "
+            "Download existing search hits with image_download_from_records in batches of "
+            "at most 20 records, without copying signed URLs between tools."
         ),
     )
     _register_tools(server)

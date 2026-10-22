@@ -33,6 +33,20 @@ key. Keep your key private.
 
 ### 2. Install VModal
 
+For Claude Code or Codex, install and connect in one command. Choose one and
+enter your API key when prompted:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/v-modal/vmodal_mcp/refs/heads/main/install_mcp.sh | bash -s -- claude
+curl -fsSL https://raw.githubusercontent.com/v-modal/vmodal_mcp/refs/heads/main/install_mcp.sh | bash -s -- codex
+```
+
+Requires `curl`, `git`, Python with pip, and the selected assistant CLI. You can
+also export `api_key` before running the command. After it succeeds, skip to
+step 4.
+
+For manual installation or another assistant:
+
 Copy this command into your terminal:
 
 ```bash

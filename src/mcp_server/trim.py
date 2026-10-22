@@ -24,7 +24,7 @@ def _first_value(item: Dict[str, Any], keys: List[str], default: Any = "") -> An
 def _str_filename(item: Dict[str, Any]) -> str:
     value = _first_value(
         item,
-        ["filename", "file_name", "filename_sanitized", "video_filename", "video", "source_path", "path", "title"],
+        ["filename", "file_name", "filename_sanitized", "video_filename", "source_asset_file"],
     )
     return str(value or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
 
@@ -32,7 +32,20 @@ def _str_filename(item: Dict[str, Any]) -> str:
 def _str_timestamp(item: Dict[str, Any]) -> str:
     value = _first_value(item, ["ts_unix_13digits", "ts_unix", "timestamp_ms"])
     text = str(value).strip() if value is not None else ""
-    return text.zfill(13) if text.isdigit() else text
+    if not item.get("ts_unix_13digits") and text.isascii() and text.isdigit() and len(text) <= 13:
+        return text.zfill(13)
+    return text
+
+
+def str_frame_error(row: Dict[str, Any]) -> str:
+    for key, label in [("mode", "mode"), ("group_name", "collection"), ("stream_name", "stream"),
+                       ("modality", "modality"), ("filename", "filename")]:
+        if not str(row.get(key) or "").strip():
+            return f"missing_{label}"
+    ts = str(row.get("ts_unix_13digits") or "")
+    if len(ts) != 13 or not ts.isascii() or not ts.isdigit():
+        return "invalid_timestamp"
+    return ""
 
 
 def _search_row(item: Dict[str, Any], context: Dict[str, Any], verbose: bool) -> Dict[str, Any]:
@@ -41,21 +54,24 @@ def _search_row(item: Dict[str, Any], context: Dict[str, Any], verbose: bool) ->
     stream = _first_value(item, ["stream_name", "stream"], req_stream)
     filename = _str_filename(item)
     ts = _str_timestamp(item)
-    source_path = _first_value(item, ["source_path", "path"], filename)
-    text = _first_value(item, ["text_snippet", "text", "snippet"])
+    source_path = _first_value(item, ["source_path", "source_asset_file", "path"],
+                               _first_value(item, ["filename", "file_name", "filename_sanitized", "video_filename"], filename))
+    text = _first_value(item, ["text_snippet", "text", "snippet", "text_agg_tok"])
+    mode = _first_value(item, ["mode"], context.get("mode", ""))
+    modality = "vid_img" if str(mode).startswith("vid_") else (raw_modality or "img_raw")
     legacy_ts = item.get("ts_unix")
     if legacy_ts is None or (isinstance(legacy_ts, str) and not legacy_ts.strip()):
         legacy_ts = ts
     row = dict(item) if verbose else {}
-    if verbose and raw_modality and raw_modality != "vid_img":
+    if verbose and raw_modality and raw_modality != modality:
         row["search_modality"] = raw_modality
     row.update(
         {
             "score": item.get("score"),
-            "mode": _first_value(item, ["mode"], context.get("mode", "")),
+            "mode": mode,
             "group_name": _first_value(item, ["group_name"], context.get("group_name", "")),
             "stream_name": stream,
-            "modality": "vid_img",
+            "modality": modality,
             "filename": filename,
             "source_path": source_path,
             "ts_unix_13digits": ts,
@@ -63,6 +79,8 @@ def _search_row(item: Dict[str, Any], context: Dict[str, Any], verbose: bool) ->
             "text_snippet": str(text or "") if verbose else _text_snippet(text),
         }
     )
+    row["frame_error"] = str_frame_error(row)
+    row["frame_fetchable"] = not row["frame_error"]
     return row
 
 
@@ -87,6 +105,8 @@ def normalize_image_records(records: Any) -> List[Dict[str, Any]]:
         if ts:
             row["ts_unix_13digits"] = ts
         missing = [key for key in required if not str(row.get(key) or "").strip()]
+        if modality == "vid_img" and (len(ts) != 13 or not ts.isascii() or not ts.isdigit()):
+            missing.append("ts_unix_13digits")
         if missing:
             raise ValueError({"record_index": idx, "missing_fields": missing})
         out.append(row)
@@ -106,23 +126,22 @@ def trim_search(
         source = resp.get("data") or []
     if not isinstance(source, list):
         source = []
-    limit = int(getattr(resp, "cnt_actual", 0) or len(source))
-    if not verbose:
-        limit = min(limit, 20)
+    limit = int(context.get("limit", 20))
     rows = []
     for item in source[:limit]:
         rows.append(_search_row(_item_dict(item), context, verbose))
     payload = {
-        "n_total": int(getattr(resp, "cnt_total", len(source)) or 0),
-        "execution_time_ms": getattr(resp, "execution_time_ms", 0),
+        "n_total": int((resp.get("cnt_total", len(source)) if isinstance(resp, dict) else getattr(resp, "cnt_total", len(source))) or 0),
+        "execution_time_ms": resp.get("execution_time_ms", 0) if isinstance(resp, dict) else getattr(resp, "execution_time_ms", 0),
         "data": rows,
         "trimmed": not verbose,
+        "n_total_returned": len(rows),
+        "requested_limit": limit,
+        "offset": int(context.get("offset") or 0),
     }
     if "version_lancedb" in context:
         payload["version_lancedb"] = context["version_lancedb"]
         payload["available_versions"] = context.get("available_versions", [])
-    if not verbose:
-        payload["n_total_returned"] = len(rows)
     return payload
 
 
